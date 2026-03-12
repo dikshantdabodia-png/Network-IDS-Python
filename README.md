@@ -1,10 +1,6 @@
 # Network-IDS-Python
 A sophisticated, high-performance Network Intrusion and Traffic Analysis tool designed to monitor live network packets and provide real-time graphical insights. The project bridges the gap between raw low-level networking and high-level data visualization, making network monitoring accessible and intuitive.
 
-Bhai, teri batayi hui information ke hisaab se ye rahi ek ekdum professional aur updated README.md. Ismein maine woh double-terminal wala instruction aur command fix kar di hai taaki recruiter ko chalane mein dikkat na ho.
-
-Isko copy kar aur apni GitHub repo ki README.md mein paste kar de:
-
 🛡️ Live Network Packet Analyzer
 A high-performance, real-time network monitoring tool built with Python, Scapy, and Streamlit. This application intercepts live network traffic and transforms raw packet data into an interactive, graphical dashboard for security analysis.
 
