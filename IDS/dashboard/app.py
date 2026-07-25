@@ -1,156 +1,263 @@
-import streamlit as st
+from flask import Flask, render_template
 import pandas as pd
 import os
-from streamlit_autorefresh import st_autorefresh
+import webbrowser
+import threading
+import time
 
-# ---------------- Page Config ----------------
-st.set_page_config(page_title="Wi‑Fi IDS Dashboard", layout="wide")
-st.title("🔐 Real‑Time Wi‑Fi Intrusion Detection System")
+# ==========================================
+# PATHS
+# ==========================================
 
-# ---------------- Paths ----------------
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-CSV_FILE = os.path.join(BASE_DIR, "..", "data", "features.csv")
-LOG_FILE = os.path.join(BASE_DIR, "..", "logs", "log.txt")
+BASE_DIR = os.path.dirname(
+    os.path.dirname(
+        os.path.abspath(__file__)
+    )
+)
 
-# ---------------- Auto Refresh ----------------
-st_autorefresh(interval=2000, key="refresh")
+TEMPLATE_DIR = os.path.join(
+    os.path.dirname(
+        os.path.abspath(__file__)
+    ),
+    "templates"
+)
 
-# ---------------- Alerts ----------------
-st.subheader("🚨 Intrusion Alerts")
+STATIC_DIR = os.path.join(
+    os.path.dirname(
+        os.path.abspath(__file__)
+    ),
+    "static"
+)
 
-if os.path.exists(LOG_FILE):
-    with open(LOG_FILE) as f:
-        logs = f.readlines()
+CSV_FILE = os.path.join(
+    BASE_DIR,
+    "data",
+    "features.csv"
+)
 
-    if logs:
-        st.error("⚠️ Intrusion Detected")
-        last_log = logs[-1]
-        log_parts = last_log.split("|")
-        
-        # Safe extraction of IP, location, and organization data
-        victim_ip = log_parts[3].strip().split(":")[1].strip() if len(log_parts) > 3 else "N/A"
-        attacker_ip = log_parts[4].strip().split(":")[1].strip() if len(log_parts) > 4 else "N/A"
-        attacker_location = log_parts[5].strip().split(":")[1].strip() if len(log_parts) > 5 else "Location unavailable"
-        attacker_organization = log_parts[6].strip().split(":")[1].strip() if len(log_parts) > 6 else "Organization unavailable"
-        victim_location = log_parts[7].strip().split(":")[1].strip() if len(log_parts) > 7 else "Location unavailable"
-        victim_organization = log_parts[8].strip().split(":")[1].strip() if len(log_parts) > 8 else "Organization unavailable"
-        
-        # Display the attacker and victim information in a formatted way
-        st.markdown(f"### **Attacker Information**")
-        st.text(f"IP Address: {attacker_ip}")
-        st.text(f"Location: {attacker_location}")
-        st.text(f"ISP/Organization: {attacker_organization}")
-        
-        st.markdown(f"### **Victim Information**")
-        st.text(f"IP Address: {victim_ip}")
-        st.text(f"Location: {victim_location}")
-        st.text(f"ISP/Organization: {victim_organization}")
+# ==========================================
+# FLASK
+# ==========================================
 
-        # Display last 5 logs
-        st.text("".join(logs[-5:]))
+app = Flask(
+    __name__,
+    template_folder=TEMPLATE_DIR,
+    static_folder=STATIC_DIR
+)
+
+
+# ==========================================
+# READ DATA
+# ==========================================
+
+def load_data():
+
+    if not os.path.exists(CSV_FILE):
+        return pd.DataFrame()
+
+    try:
+
+        df = pd.read_csv(CSV_FILE)
+
+        if df.empty:
+            return df
+
+        df["timestamp"] = pd.to_datetime(
+            df["timestamp"],
+            errors="coerce"
+        )
+
+        df = df.dropna(
+            subset=["timestamp"]
+        )
+
+        return df
+
+    except Exception as e:
+
+        print(
+            "CSV Read Error:",
+            e
+        )
+
+        return pd.DataFrame()
+
+
+# ==========================================
+# DASHBOARD ROUTE
+# ==========================================
+
+@app.route("/")
+def dashboard():
+
+    df = load_data()
+
+    if df.empty:
+
+        return render_template(
+            "index.html",
+            status="NO DATA",
+            status_color="gray",
+            status_message="Waiting for IDS traffic...",
+            logs=[],
+            graph_labels=[],
+            packet_sizes=[],
+            unique_ports=[],
+            tech={}
+        )
+
+    # ======================================
+    # LAST 25 FOR GRAPHS
+    # ======================================
+
+    graph_df = df.tail(25)
+
+    graph_labels = [
+        str(t)[11:19]
+        for t in graph_df["timestamp"]
+    ]
+
+    packet_sizes = (
+        graph_df["packet_size"]
+        .fillna(0)
+        .tolist()
+    )
+
+    unique_ports = (
+        graph_df["unique_ports"]
+        .fillna(0)
+        .tolist()
+    )
+
+    # ======================================
+    # LAST ENTRY STATUS
+    # ======================================
+
+    latest = df.iloc[-1]
+
+    attack_type = str(
+        latest["attack_type"]
+    )
+
+    reason = str(
+        latest["reason"]
+    )
+
+    if attack_type != "BENIGN":
+
+        status = "⚠️ INTRUSION DETECTED"
+        status_color = "red"
+
+        status_message = (
+            f"{attack_type} detected "
+            f"— {reason}"
+        )
+
     else:
-        st.success("✅ No intrusions detected")
-else:
-    st.info("IDS running, waiting for alerts...")
 
-# ---------------- Load CSV ----------------
-st.subheader("📊 Live Network Traffic Analysis")
+        status = "✅ NORMAL TRAFFIC"
+        status_color = "green"
 
-if not os.path.exists(CSV_FILE):
-    st.warning("Waiting for live CSV from packet sniffer...")
-    st.stop()
+        status_message = (
+            "Traffic within normal "
+            "baseline."
+        )
 
-try:
-    df = pd.read_csv(CSV_FILE, on_bad_lines="skip")
+    # ======================================
+    # LAST 5 LOGS
+    # ======================================
 
-    # 🔥 CLEAN COLUMN NAMES (MOST IMPORTANT FIX)
-    df.columns = df.columns.str.strip().str.lower()
+    logs = (
+        df.tail(5)
+        .iloc[::-1]
+        .to_dict(
+            orient="records"
+        )
+    )
 
-    required_cols = {
-        "avg_size", "tcp", "udp", "unique_ports",
-        "prediction", "risk", "victim_ip", "attacker_ip", "attacker_location", "attacker_organization", "victim_location", "victim_organization"
+    # ======================================
+    # TECH ANALYSIS
+    # ======================================
+
+    recent = df.tail(10)
+
+    tech = {
+
+        "avg_packet_size": round(
+            recent["packet_size"]
+            .mean(),
+            2
+        ),
+
+        "packet_rate": round(
+            recent["packet_rate"]
+            .mean(),
+            2
+        ),
+
+        "tcp_count": int(
+            recent["tcp_count"]
+            .mean()
+        ),
+
+        "udp_count": int(
+            recent["udp_count"]
+            .mean()
+        ),
+
+        "icmp_count": int(
+            recent["icmp_count"]
+            .mean()
+        ),
+
+        "unique_ports": int(
+            recent["unique_ports"]
+            .mean()
+        )
     }
 
-    if not required_cols.issubset(df.columns):
-        st.error(f"CSV columns mismatch ❌\nFound: {list(df.columns)}")
-        st.stop()
+    return render_template(
+        "index.html",
 
-    # Convert numeric
-    for col in ["avg_size", "tcp", "udp", "unique_ports", "prediction"]:
-        df[col] = pd.to_numeric(df[col], errors="coerce")
+        status=status,
+        status_color=status_color,
+        status_message=status_message,
 
-    df.dropna(inplace=True)
-    df["batch"] = range(1, len(df) + 1)
+        logs=logs,
 
-except Exception as e:
-    st.error(f"CSV read error: {e}")
-    st.stop()
+        graph_labels=graph_labels,
+        packet_sizes=packet_sizes,
+        unique_ports=unique_ports,
 
-# ---------------- Graphs ----------------
-col1, col2 = st.columns(2)
-
-with col1:
-    st.line_chart(
-        df.set_index("batch")[["avg_size", "tcp", "udp"]],
-        use_container_width=True
+        tech=tech
     )
-    st.caption("X: Time Window | Y: Packet size / Count")
 
-with col2:
-    st.line_chart(
-        df.set_index("batch")[["unique_ports"]],
-        use_container_width=True
+
+# ==========================================
+# AUTO OPEN BROWSER
+# ==========================================
+
+def open_browser():
+
+    time.sleep(1.5)
+
+    webbrowser.open(
+        "http://127.0.0.1:5000"
     )
-    st.caption("X: Time Window | Y: Unique destination ports")
 
-# ---------------- Technical Analysis ----------------
-st.subheader("⚙️ Technical Risk Analysis")
 
-latest = df.iloc[-1]
+# ==========================================
+# RUN
+# ==========================================
 
-if latest["prediction"] == 1:
-    st.error("🚨 STATUS: Intrusion Detected")
-else:
-    st.success("✅ STATUS: Network Safe")
+if __name__ == "__main__":
 
-st.markdown(f"""
-**Latest Window Analysis**
-- 🔹 Avg Packet Size: `{latest['avg_size']:.2f}`
-- 🔹 TCP / UDP: `{int(latest['tcp'])} / {int(latest['udp'])}`
-- 🔹 Unique Ports: `{int(latest['unique_ports'])}`
-- 🔹 Risk Level: **{latest['risk']}**
-""")
+    threading.Thread(
+        target=open_browser
+    ).start()
 
-if "attack_type" in df.columns:
-    st.markdown(f"""
-**Attack Explanation**
-- 🛑 Type: `{latest.get('attack_type','N/A')}`
-- 📌 Reason: `{latest.get('reason','N/A')}`
-""")
-
-# ---------------- About ----------------
-st.divider()
-st.subheader("📌 About This Project")
-
-st.write(
-    "This **Real‑Time Wi‑Fi Intrusion Detection System (IDS)** captures live network traffic, "
-    "extracts behavioral features, and applies Machine Learning to detect intrusions. "
-    "Unlike basic IDS, this system also explains *why* an intrusion occurred, helping "
-    "security teams take faster and informed action."
-)
-
-# ---------------- Footer ----------------
-st.divider()
-st.markdown(
-    """
-    ### 👨‍💻 Developed by **DIKSHANT PRAJAPATI**
-
-    🔗 Connect with me:  
-    [📸 Instagram](#) | [📘 Facebook](#) | [💼 LinkedIn](#) | [💻 GitHub](#)
-
-    *B.Tech Major Project — Cybersecurity & Machine Learning*
-    """,
-    unsafe_allow_html=True
-)
-
-st.info("Dashboard auto-updates every 2 seconds using real network traffic.")
+    app.run(
+        host="127.0.0.1",
+        port=5000,
+        debug=False
+    )
